@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Client</title>
+<style>
+  body {
+    font-family: sans-serif;
+    background: #111;
+    color: whitesmoke;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 20px;
+  }
+  h1 { margin: 0; }
+  button {
+    padding: 12px 24px;
+    font-size: 16px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #btn-login { background: #4caf50; color: white; }
+  #btn-logout { background: #f44336; color: white; }
+  #status { font-size: 14px; color: #aaa; }
+</style>
+</head>
+<body>
+
+<h1 id="title">Client</h1>
+<button id="btn-login">Se connecter</button>
+<button id="btn-logout">Se déconnecter</button>
+<p id="status">Non authentifié</p>
+
+<script>
+  // Récupère l'identifiant du client depuis l'URL : /client/1 -> "1"
+  const clientId = window.location.pathname.split('/').pop();
+  document.getElementById("title").textContent = `Client ${clientId}`;
+
+  const statusEl = document.getElementById("status");
+
+  document.getElementById("btn-login").addEventListener("click", async () => {
+    const resp = await fetch(`/api/client/${clientId}/login`, { method: "POST" });
+    const data = await resp.json();
+    statusEl.textContent = data.status === "ok"
+      ? "Authentifié (visible sur le master)"
+      : "Erreur lors de la connexion";
+  });
+
+  document.getElementById("btn-logout").addEventListener("click", async () => {
+    const resp = await fetch(`/api/client/${clientId}/logout`, { method: "POST" });
+    const data = await resp.json();
+    statusEl.textContent = data.status === "ok"
+      ? "Déconnecté"
+      : "Erreur lors de la déconnexion";
+  });
+</script>
+
+</body>
+</html>
