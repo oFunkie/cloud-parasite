@@ -3,81 +3,61 @@ import datetime
 import math
 import mimetypes
 import os
+import uuid
 
 import jwt
 from flask import Flask, jsonify, make_response, request, send_file
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 SECRET_KEY = "dQteuJwbDDGtMrXWdYXQqsAQVvrQoadW"
 
-IMAGE_PATHS = {
-    "1": "medium_image.jpg",
-    "2": "output_gif.gif",
-    "3": "run_compress.gif",
-    "4": "Salut.pdf",
-    "5": "notes.txt",
-    "6": "test.txt.asc",
-}
 CHUNK_SIZE = 2800
-CLIENT_IDS = list(IMAGE_PATHS.keys())  # les slots client, un par fichier configuré
 
-# --- Etat serveur : mémoire vive, remise à zéro si le serveur redémarre ---
-CLIENTS = {
-    cid: {"authenticated": False, "chunks": None, "mime_type": None, "connected_at": None}
-    for cid in CLIENT_IDS
-}
+# --- Etat serveur : tout en mémoire vive, remis à zéro si le serveur redémarre ---
+
+# Métadonnées + statut affichés au master (JSON-safe, pas de bytes bruts ici)
+CLIENTS = {}
+# Contenu binaire réel des fichiers uploadés, séparé pour ne jamais finir
+# accidentellement dans une réponse JSON (fuite de données binaires)
+CLIENT_FILES = {}
 
 
-def encode_chunks(file_path, chunk_size=CHUNK_SIZE):
-    with open(file_path, "rb") as file:
-        file_content = file.read()
-
-    b64_encoded_file = base64.b64encode(file_content).decode("ascii")
+def encode_chunks_from_bytes(content, filename, chunk_size=CHUNK_SIZE):
+    b64_encoded_file = base64.b64encode(content).decode("ascii")
     len_file = len(b64_encoded_file)
     chunk_number = math.ceil(len_file / chunk_size)
 
-    mime_type, _ = mimetypes.guess_type(file_path)
+    mime_type, _ = mimetypes.guess_type(filename)
     if mime_type is None:
-        # mimetypes ne connaît pas .gpg (et beaucoup d'autres extensions) :
-        # on retombe sur un type binaire générique, à charge du client
-        # (JS) de décider quoi en faire via l'extension.
         mime_type = "application/octet-stream"
 
-    filename = os.path.basename(file_path)
-    ext = os.path.splitext(file_path)[1].lower()
+    ext = os.path.splitext(filename)[1].lower()
 
     chunks = [
         b64_encoded_file[i * chunk_size : (i + 1) * chunk_size]
         for i in range(chunk_number)
     ]
 
-    print(f"Fichier : {file_path}")
-    print(f"Type MIME détecté : {mime_type}")
-    print(f"Taille base64 totale : {len_file} caractères")
-    print(f"Nombre de chunks : {len(chunks)}")
-
-    return chunks, mime_type, filename, ext
-
-
-# Chaque client a ses propres chunks, générés depuis son propre fichier
-CLIENT_MEDIA = {
-    cid: dict(zip(("chunks", "mime_type", "filename", "ext"), encode_chunks(path)))
-    for cid, path in IMAGE_PATHS.items()
-}
+    return chunks, mime_type, ext
 
 
 def build_jwts(client_id):
-    """Génère un nouveau jeu de JWT signés pour le fichier propre à ce client."""
-    media = CLIENT_MEDIA[client_id]
+    """Découpe le fichier assigné à ce client et génère un JWT signé par chunk."""
+    file_info = CLIENT_FILES[client_id]
+    chunks, mime_type, ext = encode_chunks_from_bytes(
+        file_info["content"], file_info["filename"]
+    )
+
     tokens = {}
-    for i, chunk in enumerate(media["chunks"]):
+    for i, chunk in enumerate(chunks):
         token = jwt.encode(
             {
                 "chunk_index": i,
-                "total_chunks": len(media["chunks"]),
-                "mime_type": media["mime_type"],
-                "filename": media["filename"],
-                "ext": media["ext"],
+                "total_chunks": len(chunks),
+                "mime_type": mime_type,
+                "filename": file_info["filename"],
+                "ext": ext,
                 "data": chunk,
                 "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1),
             },
@@ -85,14 +65,15 @@ def build_jwts(client_id):
             algorithm="HS256",
         )
         tokens[f"session_token_{i}"] = token
-    return tokens
+
+    return tokens, mime_type, ext
 
 
 # --- Pages HTML ---
 
 @app.route("/client/<client_id>")
 def client_page(client_id):
-    if client_id not in CLIENT_IDS:
+    if client_id not in CLIENTS:
         return f"Client inconnu : {client_id}", 404
     return send_file("client.html")
 
@@ -102,25 +83,86 @@ def master_page():
     return send_file("master.html")
 
 
-# --- API utilisée par les pages ---
+# --- Gestion des clients (ajout / suppression / upload) ---
+
+@app.route("/api/master/clients", methods=["POST"])
+def add_client():
+    client_id = uuid.uuid4().hex[:8]
+    CLIENTS[client_id] = {
+        "authenticated": False,
+        "connected_at": None,
+        "filename": None,
+        "has_file": False,
+        "chunks": None,
+        "mime_type": None,
+    }
+    CLIENT_FILES[client_id] = None
+    return jsonify({"status": "ok", "client_id": client_id})
+
+
+@app.route("/api/master/clients/<client_id>", methods=["DELETE"])
+def remove_client(client_id):
+    if client_id not in CLIENTS:
+        return jsonify({"error": "client inconnu"}), 404
+
+    del CLIENTS[client_id]
+    CLIENT_FILES.pop(client_id, None)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/master/clients/<client_id>/upload", methods=["POST"])
+def upload_file(client_id):
+    if client_id not in CLIENTS:
+        return jsonify({"error": "client inconnu"}), 404
+
+    if "file" not in request.files:
+        return jsonify({"error": "aucun fichier envoyé"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "nom de fichier vide"}), 400
+
+    filename = secure_filename(file.filename)
+    content = file.read()
+
+    CLIENT_FILES[client_id] = {"content": content, "filename": filename}
+
+    # Un nouveau fichier invalide la session en cours : on force une
+    # reconnexion pour être sûr que le client récupère les bonnes données.
+    CLIENTS[client_id].update(
+        {
+            "authenticated": False,
+            "connected_at": None,
+            "chunks": None,
+            "filename": filename,
+            "has_file": True,
+        }
+    )
+
+    return jsonify({"status": "ok", "filename": filename})
+
+
+# --- API utilisée par les clients ---
 
 @app.route("/api/client/<client_id>/login", methods=["POST"])
 def client_login(client_id):
-    if client_id not in CLIENT_IDS:
+    if client_id not in CLIENTS:
         return jsonify({"error": "client inconnu"}), 404
 
-    tokens = build_jwts(client_id)
-    CLIENTS[client_id] = {
-        "authenticated": True,
-        "chunks": tokens,
-        "mime_type": CLIENT_MEDIA[client_id]["mime_type"],
-        "connected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
+    if not CLIENTS[client_id]["has_file"]:
+        return jsonify({"error": "aucun fichier n'a été assigné à ce client par le master"}), 400
+
+    tokens, mime_type, ext = build_jwts(client_id)
+    CLIENTS[client_id].update(
+        {
+            "authenticated": True,
+            "chunks": tokens,
+            "mime_type": mime_type,
+            "connected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+    )
 
     resp = make_response(jsonify({"status": "ok", "client_id": client_id}))
-    # On pose aussi les cookies sur le navigateur du client, pour rester
-    # cohérent avec le concept JWT-en-cookie (utile si ce client veut
-    # afficher son propre fichier via display.html séparément).
     for name, token in tokens.items():
         resp.set_cookie(name, token, httponly=False, secure=False, samesite="Lax")
     return resp
@@ -128,10 +170,12 @@ def client_login(client_id):
 
 @app.route("/api/client/<client_id>/logout", methods=["POST"])
 def client_logout(client_id):
-    if client_id not in CLIENT_IDS:
+    if client_id not in CLIENTS:
         return jsonify({"error": "client inconnu"}), 404
 
     CLIENTS[client_id]["authenticated"] = False
+    CLIENTS[client_id]["chunks"] = None
+    CLIENTS[client_id]["connected_at"] = None
     return jsonify({"status": "ok", "client_id": client_id})
 
 

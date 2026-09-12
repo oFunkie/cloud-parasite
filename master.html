@@ -11,84 +11,115 @@
     padding: 20px;
   }
   h1 { text-align: center; }
-  .grid {
+  h2.section-title { border-bottom: 1px solid #333; padding-bottom: 8px; }
+
+  /* --- Panneau de gestion --- */
+  .manage-panel {
+    max-width: 700px;
+    margin: 0 auto 40px;
+    background: #1c1c1c;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .client-row {
     display: flex;
-    gap: 20px;
-    justify-content: center;
-    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .client-row:last-child { border-bottom: none; }
+  .client-row .id { font-family: monospace; color: #7fd; }
+  .client-row .filename { flex: 1; color: #ccc; font-size: 14px; }
+  .client-row .status-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .status-dot.on { background: #4caf50; }
+  .status-dot.off { background: #555; }
+  button, select, input[type="file"] {
+    font-size: 14px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #444;
+    background: #222;
+    color: whitesmoke;
+  }
+  button { cursor: pointer; }
+  button.danger { background: #5c1f1f; border-color: #7a2b2b; }
+  button.primary { background: #1f4d2b; border-color: #2b6a3b; }
+  .upload-row { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
+
+  /* --- Grille de surveillance --- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 15px;
+    max-width: 1100px;
+    margin: 0 auto;
   }
   .card {
     background: #1c1c1c;
     border: 2px solid #333;
     border-radius: 10px;
-    padding: 15px;
-    width: 34vw;
+    padding: 8px;
     text-align: center;
   }
   .card.online { border-color: #4caf50; }
   .card.offline { border-color: #555; opacity: 0.5; }
-  .card h2 { margin-top: 0; }
+  .card h2 { margin: 0 0 4px; font-size: 12px; }
   .media-box {
-    width: 33vw;
-    height: 33vw;
-    margin: 10px auto 0;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    margin: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     background: #000;
     overflow: hidden;
   }
-  .media-box img,
-  .media-box video {
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
-    image-rendering: pixelated;
+  .media-box img, .media-box video {
+    width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated;
   }
-  .media-box iframe {
-    width: 100%;
-    height: 100%;
-    border: none;
-    background: white;
-  }
+  .media-box iframe { width: 100%; height: 100%; border: none; background: white; }
   .media-box pre {
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    padding: 10px;
-    box-sizing: border-box;
-    overflow-y: auto;
-    text-align: left;
-    white-space: pre-wrap;
-    word-break: break-word;
-    background: #0a0a0a;
-    color: #7fd;
+    width: 100%; height: 100%; margin: 0; padding: 6px; box-sizing: border-box;
+    overflow-y: auto; text-align: left; white-space: pre-wrap; word-break: break-word;
+    background: #0a0a0a; color: #7fd; font-size: 10px;
   }
   .download-link {
-    display: inline-block;
-    padding: 10px 20px;
-    background: #333;
-    color: whitesmoke;
-    text-decoration: none;
-    border-radius: 6px;
-    border: 1px solid #555;
+    display: inline-block; padding: 6px 10px; background: #333; color: whitesmoke;
+    text-decoration: none; border-radius: 6px; border: 1px solid #555; font-size: 11px;
   }
   .download-link:hover { background: #444; }
-  .timestamp { font-size: 12px; color: #888; }
-  .placeholder {
-    color: #666;
-    font-style: italic;
-  }
+  .timestamp { font-size: 10px; color: #888; margin-bottom: 4px; }
+  .placeholder { color: #666; font-style: italic; font-size: 11px; }
 </style>
 </head>
 <body>
 
 <h1>Master - Client Cloud</h1>
+
+<div class="manage-panel">
+  <h2 class="section-title">Gestion des clients</h2>
+  <div id="client-list"></div>
+
+  <div class="upload-row">
+    <button id="btn-add-client" class="primary">+ Ajouter un client</button>
+    <select id="upload-target"></select>
+    <input type="file" id="upload-file" />
+    <button id="btn-upload">Assigner le fichier</button>
+  </div>
+  <p id="manage-message" style="font-size: 13px; color: #7fd;"></p>
+</div>
+
+<h2 class="section-title" style="text-align:center;">Surveillance</h2>
 <div class="grid" id="grid"></div>
 
 <script>
   const POLL_INTERVAL_MS = 2500;
   const gridEl = document.getElementById("grid");
+  const clientListEl = document.getElementById("client-list");
+  const uploadTargetEl = document.getElementById("upload-target");
+  const manageMessageEl = document.getElementById("manage-message");
 
   function base64UrlDecode(str) {
     str = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -101,8 +132,6 @@
     return JSON.parse(base64UrlDecode(payloadRaw));
   }
 
-  // Décode une chaîne base64 en texte UTF-8 propre (gère les accents correctement,
-  // contrairement à un simple atob() qui traite chaque octet comme un caractère latin1)
   function base64ToText(b64) {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
@@ -113,10 +142,7 @@
   function reconstructFile(chunksObj) {
     const payloads = Object.values(chunksObj).map(decodeJwtPayload);
     payloads.sort((a, b) => a.chunk_index - b.chunk_index);
-
-    if (payloads.length < payloads[0].total_chunks) {
-      return null; // chunk manquant : fichier corrompu, on ne tente rien
-    }
+    if (payloads.length < payloads[0].total_chunks) return null;
 
     const fullBase64 = payloads.map(p => p.data).join('');
     return {
@@ -127,39 +153,70 @@
     };
   }
 
-  // Choisit le bon rendu HTML selon le type de fichier
   function renderMedia(file) {
     const { base64: b64, mimeType, filename, ext } = file;
     const dataUrl = `data:${mimeType};base64,${b64}`;
 
-    if (mimeType.startsWith("image/")) {
-      return `<img src="${dataUrl}" alt="${filename}" />`;
-    }
-
-    if (mimeType.startsWith("video/")) {
-      return `<video src="${dataUrl}" controls></video>`;
-    }
-
-    if (mimeType === "application/pdf" || ext === ".pdf") {
-      return `<iframe src="${dataUrl}" title="${filename}"></iframe>`;
-    }
-
+    if (mimeType.startsWith("image/")) return `<img src="${dataUrl}" alt="${filename}" />`;
+    if (mimeType.startsWith("video/")) return `<video src="${dataUrl}" controls></video>`;
+    if (mimeType === "application/pdf" || ext === ".pdf") return `<iframe src="${dataUrl}" title="${filename}"></iframe>`;
     if (mimeType.startsWith("text/") || ext === ".txt") {
       const text = base64ToText(b64);
       return `<pre>${text.replace(/</g, "&lt;")}</pre>`;
     }
-
-    // Cas générique : binaire non affichable (ex: .gpg, un fichier chiffré
-    // n'a par nature aucun contenu à "afficher" côté navigateur).
     return `
       <div>
         <p class="placeholder">Fichier non affichable (${ext || mimeType})</p>
-        <a class="download-link" href="${dataUrl}" download="${filename}">
-          Télécharger ${filename}
-        </a>
+        <a class="download-link" href="${dataUrl}" download="${filename}">Télécharger ${filename}</a>
       </div>
     `;
   }
+
+  // --- Actions de gestion ---
+
+  document.getElementById("btn-add-client").addEventListener("click", async () => {
+    const resp = await fetch("/api/master/clients", { method: "POST" });
+    const data = await resp.json();
+    manageMessageEl.textContent = `Client ${data.client_id} créé.`;
+    refresh();
+  });
+
+  document.getElementById("btn-upload").addEventListener("click", async () => {
+    const clientId = uploadTargetEl.value;
+    const fileInput = document.getElementById("upload-file");
+    if (!clientId) {
+      manageMessageEl.textContent = "Aucun client sélectionné.";
+      return;
+    }
+    if (!fileInput.files.length) {
+      manageMessageEl.textContent = "Choisis un fichier d'abord.";
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", fileInput.files[0]);
+
+    const resp = await fetch(`/api/master/clients/${clientId}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+    const data = await resp.json();
+
+    manageMessageEl.textContent = resp.ok
+      ? `"${data.filename}" assigné au client ${clientId}.`
+      : `Erreur : ${data.error}`;
+
+    fileInput.value = "";
+    refresh();
+  });
+
+  async function removeClient(clientId) {
+    await fetch(`/api/master/clients/${clientId}`, { method: "DELETE" });
+    manageMessageEl.textContent = `Client ${clientId} supprimé.`;
+    refresh();
+  }
+
+  // --- Rafraîchissement global (gestion + surveillance en un seul poll) ---
 
   async function refresh() {
     let data;
@@ -171,18 +228,51 @@
       return;
     }
 
+    const clients = data.clients;
+    const clientIds = Object.keys(clients);
+
+    // --- Panneau de gestion ---
+    clientListEl.innerHTML = clientIds.length
+      ? ""
+      : `<p class="placeholder">Aucun client. Clique sur "+ Ajouter un client".</p>`;
+
+    const previousSelection = uploadTargetEl.value;
+    uploadTargetEl.innerHTML = "";
+
+    clientIds.forEach(clientId => {
+      const info = clients[clientId];
+
+      const row = document.createElement("div");
+      row.className = "client-row";
+      row.innerHTML = `
+        <span class="status-dot ${info.authenticated ? "on" : "off"}"></span>
+        <span class="id">${clientId}</span>
+        <span class="filename">${info.filename || "(aucun fichier assigné)"}</span>
+        <button class="danger" data-id="${clientId}">Supprimer</button>
+      `;
+      row.querySelector("button").addEventListener("click", () => removeClient(clientId));
+      clientListEl.appendChild(row);
+
+      const opt = document.createElement("option");
+      opt.value = clientId;
+      opt.textContent = `Client ${clientId}`;
+      uploadTargetEl.appendChild(opt);
+    });
+
+    if (clientIds.includes(previousSelection)) {
+      uploadTargetEl.value = previousSelection;
+    }
+
+    // --- Grille de surveillance ---
     gridEl.innerHTML = "";
 
-    for (const [clientId, info] of Object.entries(data.clients)) {
+    for (const [clientId, info] of Object.entries(clients)) {
       const card = document.createElement("div");
       card.className = `card ${info.authenticated ? "online" : "offline"}`;
 
       if (info.authenticated) {
         const file = reconstructFile(info.chunks);
-        const mediaHtml = file
-          ? renderMedia(file)
-          : `<p class="placeholder">Fichier incomplet</p>`;
-
+        const mediaHtml = file ? renderMedia(file) : `<p class="placeholder">Fichier incomplet</p>`;
         card.innerHTML = `
           <h2>Client ${clientId} (connected)</h2>
           <div class="timestamp">Connected since : ${new Date(info.connected_at).toLocaleTimeString()}</div>
@@ -194,7 +284,6 @@
           <div class="media-box"><p class="placeholder">En attente de connexion...</p></div>
         `;
       }
-
       gridEl.appendChild(card);
     }
   }
